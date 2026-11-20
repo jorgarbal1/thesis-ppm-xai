@@ -1,0 +1,14 @@
+# raw/filtered data and regenerable processed datasets
+data/
+processed_datasets/
+
+# trained model checkpoints (regenerable via scripts/train_full_sweep.py)
+*.keras
+
+# logs
+*.log
+
+# python / notebook caches
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
