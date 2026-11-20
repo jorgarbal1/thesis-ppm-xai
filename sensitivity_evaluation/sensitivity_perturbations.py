@@ -1,15 +1,3 @@
-"""Perturbation protocol for the explanation-sensitivity study (RIS/ROS/FA/RA Monte Carlo, see
-sensitivity_evaluation/metrics.py): one Gaussian-noise perturbation of numerical cells
-(perturb_numeric) and one RRF-sampled (frequency rank + embedding-distance rank) perturbation of
-categorical cells (perturb_categorical), applied independently to a single left-padded prefix.
-
-build_all_categorical_sampling_distributions generalizes the categorical sampling mechanism to every
-categorical variable, event- or case-level, using columns_info to pick the right mechanism per variable
-(build_transition_sampling_distributions for "event", build_embedding_only_sampling_distributions for
-"case") -- accepted deliberately even for a variable with no real "next" pattern (e.g. Resource): the
-frequency-ranking half of the RRF fusion will just carry little signal for those, which is a known,
-accepted limitation, not a bug to work around.
-"""
 import os
 import warnings
 from collections import Counter
@@ -30,20 +18,7 @@ def _processed_path(dataset_name, processed_root):
 
 
 def load_dataset(task, dataset_name, processed_root):
-    """task: "next_activity" or "remaining_time" -- picks which preprocessing.loader function to call,
-    nothing else; independent of dataset_name, so any task/dataset combination that has a processed folder
-    works, not just one hardcoded pairing.
-    dataset_name: the processed-dataset FOLDER name under processed_root (e.g. "helpdesk_remaining_time",
-    "bpic17_complete_remaining_time", "bpic20_permit_next_activity", ...).
-    processed_root: root directory holding the processed-dataset folders. Required, not defaulted: the LSTM
-    and Transformer models' own processed_datasets directories can diverge feature-for-feature for the "same"
-    dataset_name (each architecture's own preprocessing run decides its own variable set), so silently
-    defaulting to one of them here would be the wrong choice as often as the right one -- pass the directory
-    that matches whichever checkpoint is actually being explained.
-
-    Returns preprocessing.loader's own output dict unchanged (X_train, y_train, X_test, y_test, feature_names,
-    columns_info, max_len, train_k, test_k, vocab_sizes, categorical_columns, numerical_columns, plus
-    task-specific keys -- see preprocessing/loader.py)."""
+    """Loads a processed dataset's arrays via preprocessing.loader, for the given task/dataset/root."""
     if task not in LOADERS:
         raise ValueError(f"unknown task {task!r}, expected one of {list(LOADERS)}")
     loader_fn = LOADERS[task]
@@ -52,9 +27,7 @@ def load_dataset(task, dataset_name, processed_root):
 
 def perturb_numeric(prefix, length, numerical_columns, columns_info, gap_columns, implicit_cumulative_columns,
                      numerical_minmax, percent_cells, noise_scale, rng, min_noise = 1.0):
-    """One Gaussian-noise perturbation of the numerical cells of a single (already left-padded) prefix.
-    Verbatim copy of sensitivity_perturbations.py's function of the same name -- see that file for the full
-    docstring/rationale (gap+cumsum cascade, min_noise floor, event/case distinction); unchanged here."""
+    """One Gaussian-noise perturbation of the numerical cells of a single left-padded prefix."""
     if not (0.0 <= percent_cells <= 1.0):
         raise ValueError(f"percent_cells must be in [0, 1], got {percent_cells}")
     if noise_scale < 0:
@@ -80,10 +53,6 @@ def perturb_numeric(prefix, length, numerical_columns, columns_info, gap_columns
 
     candidates = [(name, t) for name in event_vars for t in event_range(name)] + \
                  [(name, None) for name in case_vars]
-    # Floor of 1: with a short prefix and/or small percent_cells, round() can land on 0, silently
-    # producing an untouched (x' == x) sample -- the exact root cause traced earlier to the EG
-    # catastrophic-ratio outliers (idx=3174: x' == x, h(x)-h(x') == 0, denominator collapses to
-    # eps_min while the explainer's own estimation noise keeps the numerator nonzero).
     if len(candidates) == 0:
         n_touch = 0
     elif percent_cells <= 0:
@@ -163,7 +132,7 @@ def perturb_numeric(prefix, length, numerical_columns, columns_info, gap_columns
 
 
 def clean_prefix_mask(X, k_array, gap_col):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Mask of rows whose gap column has no zero within the real prefix."""
     max_len = X.shape[1]
     mask = np.ones(len(X), dtype = bool)
     for i in range(len(X)):
@@ -175,17 +144,14 @@ def clean_prefix_mask(X, k_array, gap_col):
 
 
 def extract_embedding(model, variable_name):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name.
-
-    Returns (vocab_size, embed_dim) numpy array -- row 0 is the padding row (always the zero vector), rows
-    1..vocab_size-2 are the train categories, row -1 is "unseen"."""
+    """Returns the (vocab_size, embed_dim) embedding table of a categorical variable's layer."""
     import re
     layer_name = f"cat_embed_{re.sub(r'[^A-Za-z0-9_.-]', '_', variable_name)}"
     return model.get_layer(layer_name).embedding.get_weights()[0]
 
 
 def build_event_level_transitions(X_train, train_k, column):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Counts label transitions and start labels of an event-level categorical column over X_train."""
     transitions, starts = {}, Counter()
     max_len = X_train.shape[1]
     for i in range(len(X_train)):
@@ -199,19 +165,19 @@ def build_event_level_transitions(X_train, train_k, column):
 
 
 def _rrf_distribution(candidates, rankings, k_rrf):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Reciprocal-rank-fusion sampling distribution over candidates, from several per-candidate rankings."""
     scores = np.array([sum(1.0 / (k_rrf + ranking[c]) for ranking in rankings) for c in candidates])
     return candidates, scores / scores.sum()
 
 
 def _rank_of(counts_or_candidates, better_first):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Rank (1 = best) of each candidate under better_first's ordering."""
     order = sorted(counts_or_candidates, key = better_first)
     return {label: i + 1 for i, label in enumerate(order)}
 
 
 def build_transition_sampling_distributions(transitions, starts, embedding, k_rrf = 10):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Per-(previous label) RRF sampling distribution, fusing transition frequency and embedding distance."""
     all_labels = set(starts) | set(transitions) | {l for counts in transitions.values() for l in counts}
     distributions = {}
 
@@ -232,7 +198,7 @@ def build_transition_sampling_distributions(transitions, starts, embedding, k_rr
 
 
 def build_embedding_only_sampling_distributions(embedding, valid_labels, k_rrf = 10):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Per-label sampling distribution based on embedding distance alone (no transition structure)."""
     distributions = {}
     for original in valid_labels:
         candidates = [label for label in valid_labels if label != original]
@@ -246,30 +212,7 @@ def build_embedding_only_sampling_distributions(embedding, valid_labels, k_rrf =
 
 def build_all_categorical_sampling_distributions(X_train, train_k, categorical_columns, columns_info,
                                                    embeddings_by_var, k_rrf = 10):
-    """Generalizes the single-variable ("Activity" only) use case of build_transition_sampling_distributions/
-    build_embedding_only_sampling_distributions to every categorical variable present in categorical_columns,
-    picking the right mechanism per variable from columns_info -- the piece that was still missing to let
-    perturb_categorical's percent_cells budget range over ALL categorical cells instead of just Activity's.
-
-    "event"-level variable (e.g. Activity, but also e.g. Resource even if it has no real "next" pattern --
-    accepted deliberately, not detected/special-cased: RRF's frequency-ranking half will just carry little
-    signal for a variable with no real transition structure, which is a known, documented limitation of
-    applying one uniform mechanism to every event-level categorical, not a bug): build_event_level_transitions
-    + build_transition_sampling_distributions (frequency conditioned on the previous event's label, fused
-    with embedding distance via RRF).
-    "case"-level variable: no previous-event label exists to condition on (the value doesn't change within a
-    case), so build_embedding_only_sampling_distributions is used instead (embedding distance alone).
-
-    X_train, train_k: load_dataset's own "X_train"/"train_k".
-    categorical_columns: {variable_name: column_index} (load_dataset's own "categorical_columns", or a subset).
-    columns_info: {variable_name: "event" | "case"} (load_dataset's own "columns_info").
-    embeddings_by_var: {variable_name: (vocab_size, embed_dim) embedding matrix} (extract_embedding's output),
-    one entry required per variable in categorical_columns.
-    k_rrf: passed through to both underlying builders, same meaning as there.
-
-    Returns {variable_name: a build_transition_sampling_distributions(...) or
-    build_embedding_only_sampling_distributions(...) result}, ready to use directly as perturb_categorical's
-    sampling_distributions_by_var (covering every variable in categorical_columns, not just one)."""
+    """Builds a sampling distribution per categorical variable: transition-based for event-level, embedding-only for case-level."""
     distributions_by_var = {}
     for name, col in categorical_columns.items():
         embedding = embeddings_by_var[name]
@@ -278,16 +221,13 @@ def build_all_categorical_sampling_distributions(X_train, train_k, categorical_c
             distributions_by_var[name] = build_transition_sampling_distributions(transitions, starts, embedding, k_rrf)
         else:
             vocab_size = embedding.shape[0]
-            valid_labels = range(1, vocab_size - 1)   # excludes padding (index 0) and "unseen" (last index)
+            valid_labels = range(1, vocab_size - 1)
             distributions_by_var[name] = build_embedding_only_sampling_distributions(embedding, valid_labels, k_rrf)
     return distributions_by_var
 
 
 def perturb_categorical(prefix, length, categorical_columns, columns_info, sampling_distributions_by_var, percent_cells, rng):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name -- now typically called with
-    sampling_distributions_by_var covering every categorical variable (via
-    build_all_categorical_sampling_distributions), not just Activity, but the function itself is unchanged:
-    it was already generic over whatever sampling_distributions_by_var contains."""
+    """One sampled-replacement perturbation of the categorical cells of a single left-padded prefix."""
     if not (0.0 <= percent_cells <= 1.0):
         raise ValueError(f"percent_cells must be in [0, 1], got {percent_cells}")
     if length < 1 or length > prefix.shape[0]:
@@ -305,7 +245,6 @@ def perturb_categorical(prefix, length, categorical_columns, columns_info, sampl
     case_names = [name for name in names if columns_info[name] == "case"]
 
     candidates = [(name, t) for name in event_names for t in range(length)] + [(name, None) for name in case_names]
-    # Floor of 1, same reasoning as perturb_numeric's: round() can land on 0 for a short prefix.
     if len(candidates) == 0:
         n_touch = 0
     elif percent_cells <= 0:
@@ -316,11 +255,6 @@ def perturb_categorical(prefix, length, categorical_columns, columns_info, sampl
         warnings.warn(f"perturb_categorical: no eligible categorical cell to perturb for this prefix "
                       f"(length={length}) -- returning an unchanged prefix.")
 
-    # Walk a full random permutation of ALL candidates (not just a fixed pre-drawn subset of size
-    # n_touch) so that a degenerate sampling distribution (entry is None) for one chosen cell doesn't
-    # silently reduce the number of actually-touched cells below n_touch: we just move on to the next
-    # candidate in the permutation instead of giving up on that slot. Statistically equivalent to the
-    # original "draw n_touch without replacement" when no entry is ever None (the common case).
     order = rng.permutation(len(candidates)) if candidates else np.array([], dtype=int)
     touched = []
     for i in order:
@@ -356,7 +290,7 @@ def perturb_categorical(prefix, length, categorical_columns, columns_info, sampl
 
 
 def prefix_length_counts(data):
-    """Verbatim copy of sensitivity_perturbations.py's function of the same name."""
+    """Prefix-length value counts for train and test."""
     return {
         "train": pd.Series(data["train_k"] + 1).value_counts().sort_index(),
         "test": pd.Series(data["test_k"] + 1).value_counts().sort_index(),

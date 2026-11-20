@@ -186,16 +186,18 @@ def main():
                     model = load_model(checkpoint_path)
                 else:
                     print(f"[train] {name} {architecture}")
+                    model_name = f"{task.value}_{architecture}_model_{dataset_key}"
                     if task == Task.NEXT_ACTIVITY:
                         model = model_module.build_model(
                             data["max_len"], data["vocab_sizes"], data["categorical_columns"],
                             data["numerical_columns"], task = "classification", output_dim = len(data["classes"]),
-                            event_level = False, **ARCH_KWARGS[architecture])
+                            event_level = False, model_name = model_name, **ARCH_KWARGS[architecture])
                         y_train_fit = data["y_train"]
                     else:
                         model = model_module.build_model(
                             data["max_len"], data["vocab_sizes"], data["categorical_columns"],
-                            data["numerical_columns"], task = "regression", **ARCH_KWARGS[architecture])
+                            data["numerical_columns"], task = "regression", model_name = model_name,
+                            **ARCH_KWARGS[architecture])
                         y_train_fit = data["y_train"].reshape(-1, 1)
 
                     history = model_module.train_model(
